@@ -26,6 +26,7 @@ current_args = ""             # Additional args passed to the script/pytest
 current_use_pytest = False    # Flag indicating if pytest was used
 current_venv_path = ""        # Explicit venv path if provided
 current_env_vars = ""         # Custom environment variables
+current_project_root_override = ""  # Explicit project root if provided
 breakpoints = {}              # Tracks breakpoints: {abs_file_path: {line_num: {command_str, bp_number}}}
 output_thread = None          # Thread object for reading output
 
@@ -257,7 +258,7 @@ def sanitize_arguments(args_str):
 # --- MCP Tools ---
 
 @mcp.tool()
-def start_debug(file_path: str, use_pytest: bool = False, args: str = "", venv_path: str = "", env_vars: str = "") -> str:
+def start_debug(file_path: str, use_pytest: bool = False, args: str = "", venv_path: str = "", env_vars: str = "", project_root: str = "") -> str:
     """Start a debugging session on a Python file within its project context.
 
     Args:
@@ -268,9 +269,11 @@ def start_debug(file_path: str, use_pytest: bool = False, args: str = "", venv_p
                    Bypasses auto-detection when specified.
         env_vars: Optional environment variables as KEY=VALUE pairs separated by spaces.
                   Example: "STAGE=dev DEBUG=true". PYTHONPATH is automatically set to project root.
+        project_root: Optional explicit project root directory. Bypasses auto-detection when specified.
+                      Useful when test directories have their own requirements.txt.
     """
     global pdb_process, pdb_running, current_file, current_project_root, output_thread
-    global pdb_output_queue, breakpoints, current_args, current_use_pytest, current_venv_path, current_env_vars
+    global pdb_output_queue, breakpoints, current_args, current_use_pytest, current_venv_path, current_env_vars, current_project_root_override
 
     if pdb_running:
         # Check if the process is *really* still running
@@ -303,14 +306,27 @@ def start_debug(file_path: str, use_pytest: bool = False, args: str = "", venv_p
         return f"Error: File not found at '{file_path}' (checked multiple locations including CWD, src/, tests/, lib/)"
 
     file_dir = os.path.dirname(abs_file_path)
-    project_root = find_project_root(file_dir)
+
+    # Use explicit project_root if provided, otherwise auto-detect
+    explicit_project_root = project_root  # Save the original parameter
+    if project_root:
+        detected_project_root = os.path.abspath(project_root)
+        if os.path.isdir(detected_project_root):
+            print(f"Using explicit project_root: {detected_project_root}")
+        else:
+            return f"Error: Specified project_root '{project_root}' is not a valid directory."
+    else:
+        detected_project_root = find_project_root(file_dir)
 
     # --- Update Global State ---
-    current_project_root = project_root
+    # Use detected_project_root for the rest of the function
+    project_root = detected_project_root
+    current_project_root = detected_project_root
     current_file = abs_file_path
     current_args = args
     current_use_pytest = use_pytest
     current_venv_path = venv_path
+    current_project_root_override = explicit_project_root  # Store the original override
 
     # Store original working directory before changing
     original_working_dir = os.getcwd()
@@ -836,8 +852,8 @@ def list_breakpoints() -> str:
 
 @mcp.tool()
 def restart_debug() -> str:
-    """Restart the debugging session with the same file, arguments, pytest flag, venv path, and env vars."""
-    global pdb_process, pdb_running, current_file, current_args, current_use_pytest, current_venv_path, current_env_vars
+    """Restart the debugging session with the same file, arguments, pytest flag, venv path, env vars, and project root."""
+    global pdb_process, pdb_running, current_file, current_args, current_use_pytest, current_venv_path, current_env_vars, current_project_root_override
 
     if not current_file:
         return "No debugging session was previously started (or state lost) to restart."
@@ -848,7 +864,8 @@ def restart_debug() -> str:
     use_pytest_flag = current_use_pytest
     venv_to_use = current_venv_path
     env_vars_to_use = current_env_vars
-    print(f"Attempting to restart debug for: {file_to_debug} with args='{args_to_use}' pytest={use_pytest_flag} venv='{venv_to_use}' env='{env_vars_to_use}'")
+    project_root_to_use = current_project_root_override
+    print(f"Attempting to restart debug for: {file_to_debug} with args='{args_to_use}' pytest={use_pytest_flag} venv='{venv_to_use}' env='{env_vars_to_use}' project_root='{project_root_to_use}'")
 
     # End the current session forcefully if running
     end_result = "Previous session not running or already ended."
@@ -869,7 +886,7 @@ def restart_debug() -> str:
 
     # Start a new session using stored parameters
     print("Calling start_debug for restart...")
-    start_result = start_debug(file_path=file_to_debug, use_pytest=use_pytest_flag, args=args_to_use, venv_path=venv_to_use, env_vars=env_vars_to_use)
+    start_result = start_debug(file_path=file_to_debug, use_pytest=use_pytest_flag, args=args_to_use, venv_path=venv_to_use, env_vars=env_vars_to_use, project_root=project_root_to_use)
 
     # Note: Breakpoints are now restored within start_debug using the tracked 'breakpoints' dict
 
