@@ -390,6 +390,9 @@ def start_debug(file_path: str, use_pytest: bool = False, args: str = "", venv_p
         # Start with a clean environment copy, modify selectively
         env = os.environ.copy()
 
+        # Force unbuffered output for reliable PDB interaction
+        env["PYTHONUNBUFFERED"] = "1"
+
         # Set PYTHONPATH to include project root for proper imports
         existing_pythonpath = env.get("PYTHONPATH", "")
         if existing_pythonpath:
@@ -460,13 +463,13 @@ def start_debug(file_path: str, use_pytest: bool = False, args: str = "", venv_p
                     try:
                         result = subprocess.run([venv_python_path, "-m", "pytest", "--version"], capture_output=True, text=True, check=True, cwd=project_root, env=env)
                         print(f"Found pytest via '{venv_python_path} -m pytest'")
-                        cmd = [venv_python_path, "-m", "pytest", "--pdb", "-s", "--pdbcls=pdb:Pdb", rel_file_path] + parsed_args
+                        cmd = [venv_python_path, "-u", "-m", "pytest", "--pdb", "-s", "--pdbcls=pdb:Pdb", rel_file_path] + parsed_args
                     except (subprocess.CalledProcessError, FileNotFoundError):
                          return f"Error: pytest not found or executable in the virtual environment at {venv_bin_dir}. Cannot run with --pytest."
                 else:
                     cmd = [pytest_exe, "--pdb", "-s", "--pdbcls=pdb:Pdb", rel_file_path] + parsed_args
             else:
-                cmd = [venv_python_path, "-m", "pdb", rel_file_path] + parsed_args
+                cmd = [venv_python_path, "-u", "-m", "pdb", rel_file_path] + parsed_args
         else:
             print("Warning: No uv or standard venv detected in project root. Using system Python/pytest.")
             # Fallback to system python/pytest found in PATH
@@ -478,9 +481,9 @@ def start_debug(file_path: str, use_pytest: bool = False, args: str = "", venv_p
                  pytest_exe = shutil.which("pytest")
                  if not pytest_exe:
                      return "Error: pytest command not found in system PATH. Cannot run with --pytest."
-                 cmd = [pytest_exe, "--pdb", "-s", "--pdbcls=pdb:Pdb", rel_file_path] + parsed_args
+                 cmd = [python_exe, "-u", "-m", "pytest", "--pdb", "-s", "--pdbcls=pdb:Pdb", rel_file_path] + parsed_args
             else:
-                 cmd = [python_exe, "-m", "pdb", rel_file_path] + parsed_args
+                 cmd = [python_exe, "-u", "-m", "pdb", rel_file_path] + parsed_args
 
         # --- Launch Subprocess ---
         print(f"Executing command: {' '.join(map(shlex.quote, cmd))}")
