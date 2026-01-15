@@ -24,6 +24,7 @@ current_file = None           # Absolute path of the file being debugged
 current_project_root = None # Root directory of the project being debugged
 current_args = ""             # Additional args passed to the script/pytest
 current_use_pytest = False    # Flag indicating if pytest was used
+current_venv_path = ""        # Explicit venv path if provided
 breakpoints = {}              # Tracks breakpoints: {abs_file_path: {line_num: {command_str, bp_number}}}
 output_thread = None          # Thread object for reading output
 
@@ -255,16 +256,18 @@ def sanitize_arguments(args_str):
 # --- MCP Tools ---
 
 @mcp.tool()
-def start_debug(file_path: str, use_pytest: bool = False, args: str = "") -> str:
+def start_debug(file_path: str, use_pytest: bool = False, args: str = "", venv_path: str = "") -> str:
     """Start a debugging session on a Python file within its project context.
 
     Args:
         file_path: Path to the Python file or test module to debug.
         use_pytest: If True, run using pytest with --pdb.
         args: Additional arguments to pass to the Python script or pytest (space-separated).
+        venv_path: Optional explicit path to virtualenv directory (e.g., '/path/to/venv').
+                   Bypasses auto-detection when specified.
     """
     global pdb_process, pdb_running, current_file, current_project_root, output_thread
-    global pdb_output_queue, breakpoints, current_args, current_use_pytest
+    global pdb_output_queue, breakpoints, current_args, current_use_pytest, current_venv_path
 
     if pdb_running:
         # Check if the process is *really* still running
@@ -304,6 +307,7 @@ def start_debug(file_path: str, use_pytest: bool = False, args: str = "") -> str
     current_file = abs_file_path
     current_args = args
     current_use_pytest = use_pytest
+    current_venv_path = venv_path
 
     # Store original working directory before changing
     original_working_dir = os.getcwd()
@@ -325,20 +329,42 @@ def start_debug(file_path: str, use_pytest: bool = False, args: str = "") -> str
         venv_python_path = None
         venv_bin_dir = None
 
-        if uv_path and os.path.exists(os.path.join(project_root, "pyproject.toml")):
-            # More reliably check for uv.lock as primary indicator
-            if os.path.exists(os.path.join(project_root, "uv.lock")):
-                 print("Found uv.lock, assuming uv project.")
-                 use_uv = True
-            else:
-                 # Optional: Could check pyproject.toml for [tool.uv]
-                 print("Found pyproject.toml and uv executable, tentatively trying uv.")
-                 # We'll let `uv run` determine if it's actually a uv project.
-                 use_uv = True # Tentatively true
+        # Check for explicit venv_path first (highest priority)
+        if venv_path:
+            venv_path = os.path.abspath(venv_path)
+            if os.path.isdir(venv_path):
+                if sys.platform == "win32":
+                    explicit_python = os.path.join(venv_path, 'Scripts', 'python.exe')
+                    explicit_bin_dir = os.path.join(venv_path, 'Scripts')
+                else:
+                    explicit_python = os.path.join(venv_path, 'bin', 'python')
+                    explicit_bin_dir = os.path.join(venv_path, 'bin')
 
-        if not use_uv:
-            # Look for a standard venv if uv isn't detected/used
-            venv_python_path, venv_bin_dir = find_venv_details(project_root)
+                if os.path.exists(explicit_python):
+                    print(f"Using explicit venv_path: {venv_path}")
+                    venv_python_path = explicit_python
+                    venv_bin_dir = explicit_bin_dir
+                else:
+                    print(f"Warning: venv_path specified but python not found at {explicit_python}")
+            else:
+                print(f"Warning: venv_path '{venv_path}' is not a directory")
+
+        # Only do auto-detection if explicit venv_path wasn't provided or didn't work
+        if not venv_python_path:
+            if uv_path and os.path.exists(os.path.join(project_root, "pyproject.toml")):
+                # More reliably check for uv.lock as primary indicator
+                if os.path.exists(os.path.join(project_root, "uv.lock")):
+                     print("Found uv.lock, assuming uv project.")
+                     use_uv = True
+                else:
+                     # Optional: Could check pyproject.toml for [tool.uv]
+                     print("Found pyproject.toml and uv executable, tentatively trying uv.")
+                     # We'll let `uv run` determine if it's actually a uv project.
+                     use_uv = True # Tentatively true
+
+            if not use_uv:
+                # Look for a standard venv if uv isn't detected/used
+                venv_python_path, venv_bin_dir = find_venv_details(project_root)
 
         # --- Prepare Command and Subprocess Environment ---
         cmd = []
@@ -790,8 +816,8 @@ def list_breakpoints() -> str:
 
 @mcp.tool()
 def restart_debug() -> str:
-    """Restart the debugging session with the same file, arguments, and pytest flag."""
-    global pdb_process, pdb_running, current_file, current_args, current_use_pytest
+    """Restart the debugging session with the same file, arguments, pytest flag, and venv path."""
+    global pdb_process, pdb_running, current_file, current_args, current_use_pytest, current_venv_path
 
     if not current_file:
         return "No debugging session was previously started (or state lost) to restart."
@@ -800,7 +826,8 @@ def restart_debug() -> str:
     file_to_debug = current_file
     args_to_use = current_args
     use_pytest_flag = current_use_pytest
-    print(f"Attempting to restart debug for: {file_to_debug} with args='{args_to_use}' pytest={use_pytest_flag}")
+    venv_to_use = current_venv_path
+    print(f"Attempting to restart debug for: {file_to_debug} with args='{args_to_use}' pytest={use_pytest_flag} venv='{venv_to_use}'")
 
     # End the current session forcefully if running
     end_result = "Previous session not running or already ended."
@@ -821,7 +848,7 @@ def restart_debug() -> str:
 
     # Start a new session using stored parameters
     print("Calling start_debug for restart...")
-    start_result = start_debug(file_path=file_to_debug, use_pytest=use_pytest_flag, args=args_to_use)
+    start_result = start_debug(file_path=file_to_debug, use_pytest=use_pytest_flag, args=args_to_use, venv_path=venv_to_use)
 
     # Note: Breakpoints are now restored within start_debug using the tracked 'breakpoints' dict
 
@@ -877,7 +904,7 @@ def examine_variable(variable_name: str) -> str:
 @mcp.tool()
 def get_debug_status() -> str:
     """Get the current status of the debugging session and tracked state."""
-    global pdb_running, current_file, current_project_root, breakpoints, pdb_process
+    global pdb_running, current_file, current_project_root, breakpoints, pdb_process, current_venv_path
 
     if not pdb_running:
          # Check if process exists but isn't running
@@ -911,6 +938,7 @@ def get_debug_status() -> str:
         "project_root": current_project_root,
         "use_pytest": current_use_pytest,
         "arguments": current_args,
+        "venv_path": current_venv_path,
         "process_id": pdb_process.pid if pdb_process else None,
         "tracked_breakpoints": bp_list,
     }
@@ -931,6 +959,7 @@ def get_debug_status() -> str:
            f"Debugging File: {status['current_file']}\n" + \
            f"Using Pytest: {status['use_pytest']}\n" + \
            f"Arguments: '{status['arguments']}'\n" + \
+           f"Venv Path: {status['venv_path'] or 'Auto-detected'}\n" + \
            f"Tracked Breakpoints: {status['tracked_breakpoints'] or 'None'}\n\n" + \
            f"-- Current PDB Location --\n{current_loc_output}\n" + \
            "--- End Status ---"
